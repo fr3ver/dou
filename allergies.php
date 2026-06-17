@@ -1,56 +1,74 @@
 <?php
-require_once '_auth.php';
-require_once '_allergies.php';
 
-$allergies = admin_get_allergies($pdo);
-admin_page_start('Справочник аллергенов', 'Управление списком аллергенов для детей и меню');
-?>
+function child_allergies_sql(string $child_alias = 'c'): string
+{
+    return "(SELECT GROUP_CONCAT(a.name ORDER BY a.name SEPARATOR ', ')
+             FROM child_allergies ca
+             INNER JOIN allergies a ON a.id = ca.allergy_id
+             WHERE ca.child_id = {$child_alias}.id)";
+}
 
-<?php admin_collapse_start('allergy-add', 'Добавить аллерген', false); ?>
-<div class="p-3">
-    <form action="save_allergy.php" method="POST" class="row g-2 align-items-end">
-        <div class="col-md-8">
-            <label class="form-label fw-semibold">Название</label>
-            <input type="text" name="name" class="form-control" required maxlength="100" placeholder="Молоко">
-        </div>
-        <div class="col-md-4">
-            <button type="submit" class="btn btn-accent w-100">Добавить</button>
-        </div>
-    </form>
-</div>
-<?php admin_collapse_end(); ?>
+function get_allergies(PDO $pdo): array
+{
+    return $pdo->query('SELECT id, name FROM allergies ORDER BY name')->fetchAll(PDO::FETCH_ASSOC);
+}
 
-<?php admin_collapse_start('allergy-list', 'Справочник аллергенов', false, (string)count($allergies)); ?>
-<?php admin_render_table_search('Поиск по названию...'); ?>
-<div class="table-responsive">
-    <table class="table table-hover align-middle mb-0 admin-table">
-        <thead class="table-light">
-            <tr><th>Название</th><th>Детей</th><th class="text-end">Действия</th></tr>
-        </thead>
-        <tbody>
-            <?php foreach ($allergies as $a):
-                $used = count_children_with_allergy($pdo, (int)$a['id']);
-            ?>
-            <tr>
-                <td class="fw-semibold"><?= htmlspecialchars($a['name']) ?></td>
-                <td><?= $used ? '<span class="badge bg-soft-orange text-dark">' . $used . '</span>' : '—' ?></td>
-                <td class="text-end">
-                    <?php if ($used === 0): ?>
-                    <form action="delete_allergy.php" method="POST" class="d-inline"
-                          onsubmit="return confirm('Удалить «<?= htmlspecialchars($a['name'], ENT_QUOTES) ?>»?')">
-                        <input type="hidden" name="id" value="<?= (int)$a['id'] ?>">
-                        <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
-                    </form>
-                    <?php else: ?>
-                    <span class="text-muted small">Используется</span>
-                    <?php endif; ?>
-                </td>
-            </tr>
-            <?php endforeach; ?>
-            <?php if (count($allergies) === 0): ?>
-            <tr><td colspan="3" class="text-center text-muted py-4">Справочник пуст</td></tr>
-            <?php endif; ?>
-        </tbody>
-    </table>
-</div>
-<?php admin_render_table_search_end(); admin_collapse_end(); admin_page_end(); ?>
+function get_child_allergy_ids(PDO $pdo, int $child_id): array
+{
+    $stmt = $pdo->prepare('SELECT allergy_id FROM child_allergies WHERE child_id = ? ORDER BY allergy_id');
+    $stmt->execute([$child_id]);
+
+    return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+}
+
+/** @return list<int> */
+function entity_allergy_ids_parse(mixed $json): array
+{
+    if ($json === null || $json === '') {
+        return [];
+    }
+
+    if (is_array($json)) {
+        $decoded = $json;
+    } else {
+        $decoded = json_decode((string) $json, true);
+    }
+
+    if (!is_array($decoded)) {
+        return [];
+    }
+
+    $ids = [];
+    foreach ($decoded as $value) {
+        $id = (int) $value;
+        if ($id > 0) {
+            $ids[$id] = $id;
+        }
+    }
+
+    return array_values($ids);
+}
+
+function sync_child_allergies(PDO $pdo, int $child_id, array $allergy_ids): void
+{
+    $allergy_ids = array_values(array_unique(array_filter(array_map('intval', $allergy_ids), static fn(int $id): bool => $id > 0)));
+
+    $pdo->prepare('DELETE FROM child_allergies WHERE child_id = ?')->execute([$child_id]);
+
+    if ($allergy_ids === []) {
+        return;
+    }
+
+    $stmt = $pdo->prepare('INSERT INTO child_allergies (child_id, allergy_id) VALUES (?, ?)');
+    foreach ($allergy_ids as $allergyId) {
+        $stmt->execute([$child_id, $allergyId]);
+    }
+}
+
+function count_children_with_allergy(PDO $pdo, int $allergyId): int
+{
+    $stmt = $pdo->prepare('SELECT COUNT(DISTINCT child_id) FROM child_allergies WHERE allergy_id = ?');
+    $stmt->execute([$allergyId]);
+
+    return (int) $stmt->fetchColumn();
+}

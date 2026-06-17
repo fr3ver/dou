@@ -1,231 +1,268 @@
 <?php
 require_once '../includes/config.php';
-require_once '../includes/roles.php';
-require_once '../includes/qualification_helpers.php';
+require_once '../includes/auth_helpers.php';
+require_once '../includes/lk_helpers.php';
+require_once '../includes/lk_layout.php';
+require_once '../includes/public.php';
 require_once '../includes/club_enrollment.php';
+require_once '../includes/org_documents.php';
 
-if (!isset($_SESSION['user_id']) || !role_is_admin_panel((int)$_SESSION['role_id'])) {
-    header('Location: ../login.php');
-    exit;
-}
+lk_require_role(1);
 
-$total_groups = 0;
-$total_children = 0;
-$total_employees = 0;
-$total_users = 0;
+$parentId = (int)$_SESSION['user_id'];
 $db_error = null;
-$qualification_reminders = [];
-$club_pending_count = 0;
-$club_age_mismatch = [];
-$can_qualifications = role_can_access_qualifications((int)$_SESSION['role_id']);
 
 try {
-    $total_groups    = (int) $pdo->query("SELECT COUNT(*) FROM `groups`")->fetchColumn();
-    $total_children  = (int) $pdo->query("SELECT COUNT(*) FROM children")->fetchColumn();
-    $total_employees = (int) $pdo->query("SELECT COUNT(*) FROM employees")->fetchColumn();
-    $total_users     = (int) $pdo->query("SELECT COUNT(*) FROM users")->fetchColumn();
-    if ($can_qualifications) {
-        $qualification_reminders = admin_qualification_reminders($pdo);
-    }
-    $club_pending_count = admin_club_applications_pending_count($pdo);
-    $club_age_mismatch = admin_club_applications_age_mismatch_pending($pdo);
+    $children = lk_parent_children($pdo, $parentId);
+    $groupIds = lk_parent_group_ids($children);
+    [$weekFrom, $weekTo] = lk_week_range();
+
+    $news = lk_news_for_audience($pdo, ['all', 'parent'], $groupIds, 8, true);
+    $events = lk_events_for_groups($pdo, $groupIds, 6, true);
+    $clubsEnrolled = lk_parent_clubs($pdo, $parentId);
+    $clubApplications = lk_parent_club_applications($pdo, $parentId);
+    $clubsOpen = lk_clubs_open_for_parent($pdo, $parentId, $children);
+    $reviews = lk_parent_reviews($pdo, $parentId);
+    $childIds = array_map(fn($c) => (int)$c['id'], $children);
+    $attendanceMap = lk_children_attendance_map($pdo, $childIds, 14);
 } catch (Exception $e) {
     $db_error = $e->getMessage();
+    $children = $news = $events = $clubsEnrolled = $clubApplications = $clubsOpen = $reviews = [];
+    $attendanceMap = [];
+    $weekFrom = $weekTo = date('Y-m-d');
 }
-?><!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Админ-панель — <?= SITE_NAME ?></title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link href="../assets/css/style.css?v=9" rel="stylesheet">
-</head>
-<body>
 
-<nav class="navbar navbar-expand-lg navbar-dou sticky-top shadow-sm">
-    <div class="container">
-        <a class="navbar-brand d-flex align-items-center gap-2" href="../index.php">
-            <span class="brand-icon"><i class="bi bi-balloon-heart-fill"></i></span>
-            <span><?= SITE_NAME ?></span>
-        </a>
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarAdmin" aria-label="Меню">
-            <span class="navbar-toggler-icon"></span>
-        </button>
-        <div class="collapse navbar-collapse" id="navbarAdmin">
-            <ul class="navbar-nav ms-auto align-items-lg-center gap-lg-2">
-                <li class="nav-item d-none d-lg-block">
-                    <span class="nav-link text-muted">
-                        <i class="bi bi-person-circle me-1"></i><?= htmlspecialchars($_SESSION['full_name']) ?>
-                    </span>
-                </li>
-                <li class="nav-item">
-                    <a href="../index.php" class="nav-link"><i class="bi bi-house me-1"></i>На сайт</a>
-                </li>
-                <li class="nav-item">
-                    <a href="../api/logout.php" class="btn btn-accent px-4">
-                        <i class="bi bi-box-arrow-right me-1"></i>Выйти
-                    </a>
-                </li>
-            </ul>
-        </div>
+$presentToday = count(array_filter($children, fn($c) => ($c['today_status'] ?? '') === 'present'));
+
+$badges = [];
+if (count($children) > 0) {
+    $badges[] = ['text' => count($children) . ' ' . (count($children) === 1 ? 'ребёнок' : 'детей'), 'class' => 'badge-news'];
+}
+
+$heroStats = [
+    ['icon' => 'emoji-smile', 'value' => count($children), 'label' => 'Мои дети', 'tone' => 'green'],
+    ['icon' => 'check-circle', 'value' => $presentToday, 'label' => 'Пришли сегодня', 'tone' => 'blue'],
+    ['icon' => 'stars', 'value' => count($clubsEnrolled), 'label' => 'Кружков', 'tone' => 'orange'],
+];
+
+lk_page_start(
+    'Кабинет родителя',
+    'Здравствуйте, <strong>' . htmlspecialchars($_SESSION['full_name']) . '</strong>',
+    $badges,
+    '..',
+    'Личный кабинет родителя',
+    'dashboard',
+    $heroStats
+);
+?>
+
+<?php if ($db_error): ?>
+    <div class="alert alert-danger border-0 shadow-sm">
+        <i class="bi bi-exclamation-triangle me-2"></i><?= htmlspecialchars($db_error) ?>
     </div>
-</nav>
+<?php else: ?>
 
-<section class="admin-page-header">
-    <div class="container">
-        <span class="hero-badge mb-2 d-inline-block">Панель администратора</span>
-        <h1 class="display-5 fw-bold">
-            <i class="bi bi-shield-lock-fill me-2"></i>Управление детским садом
-        </h1>
-        <p class="lead mb-0">
-            Добро пожаловать, <strong><?= htmlspecialchars($_SESSION['full_name']) ?></strong>
-        </p>
-    </div>
-</section>
+    <section id="children" class="lk-block scroll-margin-top">
+        <?php lk_section_title('people', 'Мои дети', 'Группа, воспитатель и посещаемость на сегодня'); ?>
 
-<main class="pb-5">
-    <div class="container">
-
-        <!-- Быстрые действия -->
-        <?php
-        $quick_links = [
-            ['href' => 'users.php',      'icon' => 'bi-people',          'label' => 'Пользователи', 'color' => 'green'],
-            ['href' => 'employees.php',  'icon' => 'bi-person-badge',    'label' => 'Сотрудники',   'color' => 'orange'],
-            ['href' => 'groups.php',     'icon' => 'bi-grid-3x3-gap',     'label' => 'Группы',       'color' => 'blue'],
-            ['href' => 'children.php',   'icon' => 'bi-emoji-smile',     'label' => 'Дети',         'color' => 'yellow'],
-            ['href' => 'documents.php',  'icon' => 'bi-file-earmark-medical', 'label' => 'Справки детей', 'color' => 'blue'],
-            ['href' => 'svedeniya.php', 'icon' => 'bi-journal-text', 'label' => 'Сведения', 'color' => 'blue'],
-            ['href' => 'allergies.php',  'icon' => 'bi-droplet',         'label' => 'Аллергены',    'color' => 'blue'],
-            ['href' => 'events.php',     'icon' => 'bi-calendar-event',  'label' => 'Мероприятия',  'color' => 'green'],
-            ['href' => 'clubs.php',      'icon' => 'bi-palette',         'label' => 'Кружки',       'color' => 'yellow'],
-            ['href' => 'club_applications.php', 'icon' => 'bi-inbox',  'label' => 'Заявки в кружки', 'color' => 'orange'],
-            ['href' => 'news.php',       'icon' => 'bi-newspaper',       'label' => 'Новости',      'color' => 'blue'],
-            ['href' => '../chat/index.php', 'icon' => 'bi-chat-dots',   'label' => 'Сообщения',    'color' => 'green'],
-            ['href' => 'menu.php',       'icon' => 'bi-egg-fried',       'label' => 'Меню',         'color' => 'orange'],
-            ['href' => 'reviews.php',    'icon' => 'bi-chat-quote',      'label' => 'Отзывы',       'color' => 'yellow'],
-            ['href' => 'qualifications.php', 'icon' => 'bi-mortarboard', 'label' => 'Повышение квалификации', 'color' => 'orange'],
-            ['href' => 'reports.php',    'icon' => 'bi-bar-chart',       'label' => 'Отчёты',       'color' => 'green'],
-        ];
-        if (!role_can_access_reports((int)$_SESSION['role_id'])) {
-            $quick_links = array_values(array_filter(
-                $quick_links,
-                static fn(array $link): bool => $link['href'] !== 'reports.php'
-            ));
-        }
-        if (!$can_qualifications) {
-            $quick_links = array_values(array_filter(
-                $quick_links,
-                static fn(array $link): bool => $link['href'] !== 'qualifications.php'
-            ));
-        }
-        ?>
-        <div class="mb-5">
-            <span class="section-label">Навигация</span>
-            <h2 class="section-title mb-4">Быстрые действия</h2>
-            <div class="admin-quick-grid">
-                <?php foreach ($quick_links as $link): ?>
-                <a href="<?= htmlspecialchars($link['href']) ?>" class="admin-quick-tile">
-                    <span class="admin-quick-tile-icon feature-icon-<?= $link['color'] ?>">
-                        <i class="bi <?= htmlspecialchars($link['icon']) ?>"></i>
-                    </span>
-                    <span class="admin-quick-tile-label"><?= htmlspecialchars($link['label']) ?></span>
-                </a>
+        <?php if ($children === []): ?>
+            <div class="lk-panel">
+                <div class="lk-empty-state">
+                    <i class="bi bi-emoji-smile d-block"></i>
+                    Дети не привязаны к вашей учётной записи. Обратитесь к администратору.
+                </div>
+            </div>
+        <?php else: ?>
+            <div class="row g-3">
+                <?php foreach ($children as $child): ?>
+                <div class="col-md-6">
+                    <article class="lk-child-card<?= $child['has_tnr'] ? ' lk-child-card--tnr' : '' ?>">
+                        <div class="lk-child-card-body">
+                            <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                                <h3 class="h6 fw-semibold mb-0"><?= htmlspecialchars($child['full_name']) ?></h3>
+                                <?php if ($child['has_tnr']): ?>
+                                    <span class="badge badge-tnr">ТНР</span>
+                                <?php endif; ?>
+                            </div>
+                            <p class="lk-child-meta mb-1">
+                                <i class="bi bi-calendar3"></i>
+                                <span><?= date('d.m.Y', strtotime($child['date_of_birth'])) ?></span>
+                            </p>
+                            <p class="lk-child-meta mb-1">
+                                <i class="bi bi-collection"></i>
+                                <span>
+                                    <?= htmlspecialchars($child['group_name'] ?? '—') ?>
+                                    <?php if (!empty($child['age_category'])): ?>
+                                        <span class="text-muted d-block"><?= htmlspecialchars(dou_age_display($child['age_category'])) ?></span>
+                                    <?php endif; ?>
+                                </span>
+                            </p>
+                            <?php if (!empty($child['teacher_name'])): ?>
+                            <p class="lk-child-meta mb-1">
+                                <i class="bi bi-person-badge"></i>
+                                <span><?= htmlspecialchars($child['teacher_name']) ?></span>
+                            </p>
+                            <?php if (!empty($child['group_id'])): ?>
+                            <div class="mb-2">
+                                <?php lk_render_contact_menu(
+                                    lk_parent_chat_url('teacher', $parentId, (int)$child['group_id']),
+                                    $child['teacher_phone'] ?? null,
+                                    false,
+                                    'Написать воспитателю',
+                                    'Позвонить воспитателю'
+                                ); ?>
+                            </div>
+                            <?php endif; ?>
+                            <?php endif; ?>
+                            <?php if (!empty($child['allergy_names'])): ?>
+                                <p class="small mb-2 text-allergy"><i class="bi bi-shield-exclamation me-1"></i><?= htmlspecialchars($child['allergy_names']) ?></p>
+                            <?php endif; ?>
+                            <p class="small mb-2">
+                                Сегодня: <?= lk_attendance_badge($child['today_status'] ?? null) ?>
+                                <?php if (!empty($child['today_arrival']) || !empty($child['today_departure'])): ?>
+                                    <span class="text-muted d-block mt-1">
+                                        <?= lk_format_time($child['today_arrival'] ?? null) ?>
+                                        →
+                                        <?= lk_format_time($child['today_departure'] ?? null) ?>
+                                    </span>
+                                <?php endif; ?>
+                            </p>
+                            <a href="#attendance" class="small link-more">Подробная посещаемость</a>
+                        </div>
+                    </article>
+                </div>
                 <?php endforeach; ?>
             </div>
-        </div>
-
-        <?php if ($club_pending_count > 0): ?>
-        <div class="alert alert-<?= $club_age_mismatch !== [] ? 'warning' : 'info' ?> border-0 shadow-sm mb-4">
-            <h2 class="h6 fw-bold mb-2"><i class="bi bi-inbox me-1"></i>Заявки в кружки</h2>
-            <p class="mb-2 small mb-0">
-                На рассмотрении: <strong><?= $club_pending_count ?></strong>
-                <?php if ($club_age_mismatch !== []): ?>
-                    · с возможным несоответствием возраста: <strong><?= count($club_age_mismatch) ?></strong>
-                <?php endif; ?>
-            </p>
-            <?php if ($club_age_mismatch !== []): ?>
-            <ul class="small mb-3 ps-3">
-                <?php foreach (array_slice($club_age_mismatch, 0, 5) as $row): ?>
-                <li>
-                    <?= htmlspecialchars($row['child_name']) ?> → <?= htmlspecialchars($row['club_name']) ?>:
-                    <?= htmlspecialchars($row['age_warning']['message']) ?>
-                </li>
-                <?php endforeach; ?>
-            </ul>
-            <?php endif; ?>
-            <a href="club_applications.php?filter=pending" class="btn btn-sm btn-outline-dark">Открыть заявки</a>
-        </div>
         <?php endif; ?>
+    </section>
 
-        <?php if ($can_qualifications && $qualification_reminders !== []): ?>
-        <div class="alert alert-warning border-0 shadow-sm mb-4">
-            <h2 class="h6 fw-bold mb-2"><i class="bi bi-mortarboard me-1"></i>Повышение квалификации — напоминания</h2>
-            <ul class="mb-2 ps-3">
-                <?php foreach (array_slice($qualification_reminders, 0, 5) as $row): ?>
-                <li>
-                    <?= htmlspecialchars($row['full_name']) ?>
-                    — до <?= admin_qualification_format_date($row['next_due_on']) ?>
-                    <?= admin_qualification_status_badge($row['status']) ?>
-                </li>
-                <?php endforeach; ?>
-            </ul>
-            <a href="qualifications.php" class="btn btn-sm btn-outline-dark">Открыть учёт курсов</a>
-        </div>
-        <?php endif; ?>
+    <?php require __DIR__ . '/../includes/partials/parent_attendance.php'; ?>
 
-        <!-- Статистика -->
-        <div class="admin-stats-bar card border-0 shadow-sm mb-5">
-            <div class="card-body py-4">
-                <div class="row text-center g-3">
-                    <div class="col-6 col-md-3">
-                        <div class="admin-stat-item">
-                            <i class="bi bi-collection fs-4" style="color: var(--dou-blue-dark);"></i>
-                            <div class="admin-stat-value"><?= $total_groups ?></div>
-                            <div class="admin-stat-label">Групп</div>
-                        </div>
-                    </div>
-                    <div class="col-6 col-md-3">
-                        <div class="admin-stat-item">
-                            <i class="bi bi-emoji-smile fs-4" style="color: var(--dou-green-dark);"></i>
-                            <div class="admin-stat-value"><?= $total_children ?></div>
-                            <div class="admin-stat-label">Детей</div>
-                        </div>
-                    </div>
-                    <div class="col-6 col-md-3">
-                        <div class="admin-stat-item">
-                            <i class="bi bi-person-badge fs-4" style="color: var(--dou-orange-dark);"></i>
-                            <div class="admin-stat-value"><?= $total_employees ?></div>
-                            <div class="admin-stat-label">Сотрудников</div>
-                        </div>
-                    </div>
-                    <div class="col-6 col-md-3">
-                        <div class="admin-stat-item">
-                            <i class="bi bi-people fs-4" style="color: var(--dou-blue-dark);"></i>
-                            <div class="admin-stat-value"><?= $total_users ?></div>
-                            <div class="admin-stat-label">Пользователей</div>
-                        </div>
+    <?php require __DIR__ . '/../includes/partials/parent_svedeniya_block.php'; ?>
+
+    <section id="news" class="lk-block scroll-margin-top">
+    <?php lk_section_title('newspaper', 'Новости', 'Объявления для родителей ваших групп'); ?>
+    <?php if ($news === []): ?>
+        <div class="lk-panel text-muted">Новостей пока нет.</div>
+    <?php else: ?>
+        <div class="row g-3">
+            <?php foreach ($news as $item): ?>
+            <div class="col-md-6">
+                <div class="card border-0 shadow-sm card-hover h-100">
+                    <div class="card-body">
+                        <div class="news-date-pill mb-2"><?= date('d.m.Y', strtotime($item['publish_date'])) ?></div>
+                        <h5 class="fw-semibold"><?= htmlspecialchars($item['title']) ?></h5>
+                        <?php
+                        $newsGroupsLabel = entity_groups_format_news_groups($item, '');
+                        if ($newsGroupsLabel !== ''): ?>
+                            <span class="badge badge-news mb-2"><?= htmlspecialchars($newsGroupsLabel) ?></span>
+                        <?php endif; ?>
+                        <p class="text-muted small mb-0"><?= htmlspecialchars(lk_excerpt($item['content'])) ?></p>
                     </div>
                 </div>
             </div>
+            <?php endforeach; ?>
         </div>
+    <?php endif; ?>
+    </section>
 
-        <?php if ($db_error): ?>
-            <div class="alert alert-danger border-0 shadow-sm">
-                <i class="bi bi-exclamation-triangle me-2"></i><?= htmlspecialchars($db_error) ?>
+    <section id="events" class="lk-block scroll-margin-top">
+    <?php lk_section_title('calendar-event', 'Мероприятия', 'Только для групп ваших детей'); ?>
+    <?php if ($events === []): ?>
+        <div class="lk-panel text-muted">Ближайших мероприятий нет.</div>
+    <?php else: ?>
+        <div class="lk-panel p-0 overflow-hidden">
+            <div class="list-group list-group-flush">
+                <?php foreach ($events as $event): ?>
+                <div class="list-group-item py-3">
+                    <div class="d-flex flex-wrap justify-content-between gap-2">
+                        <div>
+                            <strong><?= htmlspecialchars($event['title']) ?></strong>
+                        <?php
+                        $eventGroupsLabel = empty($event['for_all_groups'])
+                            ? entity_groups_format_event_groups($event, '')
+                            : '';
+                        if ($eventGroupsLabel !== ''): ?>
+                                <span class="badge badge-news ms-1"><?= htmlspecialchars($eventGroupsLabel) ?></span>
+                        <?php endif; ?>
+                            <?php if ($event['status'] === 'postponed'): ?>
+                                <span class="badge bg-soft-yellow text-dark ms-1">Перенесено</span>
+                            <?php endif; ?>
+                        </div>
+                        <span class="text-muted small">
+                            <?= public_event_display_date($event) ?>
+                            <?php if (!empty($event['event_time'])): ?>
+                                · <?= date('H:i', strtotime($event['event_time'])) ?>
+                            <?php endif; ?>
+                        </span>
+                    </div>
+                    <?php if (!empty($event['location'])): ?>
+                        <div class="small text-muted mt-1"><i class="bi bi-geo-alt me-1"></i><?= htmlspecialchars($event['location']) ?></div>
+                    <?php endif; ?>
+                    <?php if (!empty($event['description'])): ?>
+                        <p class="small text-muted mb-0 mt-2"><?= htmlspecialchars(lk_excerpt($event['description'], 200)) ?></p>
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
             </div>
-        <?php endif; ?>
+        </div>
+    <?php endif; ?>
+    </section>
 
+    <?php
+    require __DIR__ . '/../includes/partials/parent_clubs.php';
+    ?>
+
+    <section id="reviews" class="lk-block scroll-margin-top">
+    <?php lk_section_title('chat-heart', 'Отзыв о детском саде'); ?>
+    <div class="row g-4">
+        <div class="col-lg-5">
+            <div class="card border-0 shadow-sm">
+                <div class="card-body p-4">
+                    <form action="submit_review.php" method="POST">
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Оценка</label>
+                            <select name="rating" class="form-select" required>
+                                <?php for ($i = 5; $i >= 1; $i--): ?>
+                                    <option value="<?= $i ?>"><?= $i ?> ★</option>
+                                <?php endfor; ?>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Текст отзыва</label>
+                            <textarea name="text" class="form-control" rows="4" required maxlength="2000"
+                                      placeholder="Поделитесь впечатлениями…"></textarea>
+                        </div>
+                        <button type="submit" class="btn btn-accent">Отправить на модерацию</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-7">
+            <?php if ($reviews === []): ?>
+                <div class="card border-0 shadow-sm"><div class="card-body text-muted py-4">Вы ещё не оставляли отзывов.</div></div>
+            <?php else: ?>
+                <div class="card border-0 shadow-sm">
+                    <div class="list-group list-group-flush">
+                        <?php foreach ($reviews as $review): ?>
+                        <div class="list-group-item py-3">
+                            <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
+                                <span class="text-warning"><?= str_repeat('★', (int)$review['rating']) ?></span>
+                                <span class="badge <?= lk_review_status_class($review['status']) ?>">
+                                    <?= lk_review_status_label($review['status']) ?>
+                                </span>
+                            </div>
+                            <p class="mb-1"><?= nl2br(htmlspecialchars($review['text'])) ?></p>
+                            <span class="text-muted small"><?= date('d.m.Y H:i', strtotime($review['created_at'])) ?></span>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            <?php endif; ?>
+        </div>
     </div>
-</main>
+    </section>
 
-<footer class="footer-dou py-4">
-    <div class="container text-center">
-        <p class="footer-copy small mb-0">&copy; 2026 <?= SITE_NAME ?> — Админ-панель</p>
-    </div>
-</footer>
+<?php endif; ?>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
+<?php lk_page_end(false, '..'); ?>

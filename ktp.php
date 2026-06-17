@@ -1,106 +1,117 @@
 <?php
-require_once '_auth.php';
-require_once __DIR__ . '/../includes/ktp.php';
 
-admin_page_start(
-    'Календарно-тематическое планирование',
-    'Планы воспитателя по возрастным группам — публикуются в сведениях и кабинете сотрудников'
-);
+require_once __DIR__ . '/org_documents.php';
+require_once __DIR__ . '/ktp_catalog.php';
 
-$files = ktp_documents($pdo);
-$fileId = (int)($_GET['file_id'] ?? 0);
-$editFile = $fileId > 0 ? org_document_get($pdo, $fileId) : null;
-if ($editFile && (($editFile['section_slug'] ?? '') !== ktp_section_slug())) {
-    $editFile = null;
+function ktp_intro_text(): string
+{
+    require_once __DIR__ . '/svedeniya_sections_content.php';
+
+    return svedeniya_ktp_intro();
 }
-$grouped = ktp_documents_grouped($pdo, $files);
-?>
 
-<div class="mb-3 d-flex flex-wrap gap-2">
-    <a href="../svedeniya_section.php?slug=ktp" class="btn btn-outline-secondary btn-sm" target="_blank" rel="noopener">
-        <i class="bi bi-box-arrow-up-right me-1"></i>На сайте (сведения)
-    </a>
-    <a href="../employee/materials.php" class="btn btn-outline-secondary btn-sm" target="_blank" rel="noopener">
-        <i class="bi bi-box-arrow-up-right me-1"></i>Кабинет сотрудников
-    </a>
-</div>
+/** @return list<array<string, mixed>> */
+function ktp_documents(PDO $pdo): array
+{
+    return org_documents_for_section($pdo, ktp_section_slug(), true);
+}
 
-<?php if ($files === []): ?>
-<div class="alert alert-info border-0 shadow-sm">
-  Файлов нет. Выполните <code>php scripts/seed_ktp.php</code> для создания шаблонов.
-</div>
-<?php else: ?>
-<?php foreach (ktp_group_definitions() as $groupKey => $meta): ?>
-    <?php $groupFiles = $grouped[$groupKey] ?? []; if ($groupFiles === []) continue; ?>
-    <div class="card border-0 shadow-sm mb-3">
-        <div class="card-body p-4">
-            <h2 class="h6 fw-semibold mb-3"><?= htmlspecialchars($meta['title']) ?></h2>
-            <div class="table-responsive">
-                <table class="table table-sm align-middle mb-0">
-                    <thead class="table-light">
-                        <tr>
-                            <th>Название</th>
-                            <th>Размер</th>
-                            <th class="text-end">Действия</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($groupFiles as $file): ?>
-                        <tr>
-                            <td class="small"><?= htmlspecialchars($file['title']) ?></td>
-                            <td class="text-muted small"><?= org_document_format_size((int)($file['file_size'] ?? 0)) ?></td>
-                            <td class="text-end text-nowrap">
-                                <a href="ktp.php?file_id=<?= (int)$file['id'] ?>#upload-form" class="btn btn-sm btn-outline-secondary">
-                                    <i class="bi bi-pencil"></i>
-                                </a>
-                                <form action="delete_ktp.php" method="POST" class="d-inline"
-                                      onsubmit="return confirm('Удалить файл?')">
-                                    <input type="hidden" name="id" value="<?= (int)$file['id'] ?>">
-                                    <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
-                                </form>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
+/** @param list<array<string, mixed>> $docs @return array<string, array<string, mixed>> key => doc */
+function ktp_documents_by_key(array $docs): array
+{
+    $map = [];
+    foreach ($docs as $doc) {
+        $key = trim((string)($doc['category'] ?? ''));
+        if ($key !== '') {
+            $map[$key] = $doc;
+        }
+    }
+
+    return $map;
+}
+
+/**
+ * @param list<array<string, mixed>> $docs
+ * @return array<string, list<array<string, mixed>>> group => docs
+ */
+function ktp_documents_grouped(PDO $pdo, array $docs): array
+{
+    $byKey = ktp_documents_by_key($docs);
+    $groups = ktp_group_definitions();
+    $result = [];
+
+    foreach (array_keys($groups) as $groupKey) {
+        $result[$groupKey] = [];
+        foreach (ktp_catalog_by_group()[$groupKey] ?? [] as $item) {
+            if (isset($byKey[$item['key']])) {
+                $result[$groupKey][] = $byKey[$item['key']];
+            }
+        }
+    }
+
+    return $result;
+}
+
+function ktp_staff_can_access(int $roleId): bool
+{
+    return in_array($roleId, [2, 3, 4], true);
+}
+
+/** @param array<string, mixed> $doc */
+function ktp_render_card(array $doc, string $base = ''): void
+{
+    $title = (string)($doc['title'] ?? '');
+    $url = $base . org_document_download_url((int)($doc['id'] ?? 0), true);
+    $size = org_document_format_size((int)($doc['file_size'] ?? 0));
+    ?>
+    <article class="ktp-card">
+        <a href="<?= htmlspecialchars($url) ?>" class="ktp-card-link" target="_blank" rel="noopener">
+            <div class="ktp-card-cover" aria-hidden="true">
+                <i class="bi bi-file-earmark-pdf"></i>
+                <span class="ktp-card-cover-label">PDF</span>
             </div>
-        </div>
-    </div>
-<?php endforeach; ?>
-<?php endif; ?>
+            <h3 class="ktp-card-title"><?= htmlspecialchars($title) ?></h3>
+            <p class="ktp-card-meta"><?= htmlspecialchars($size) ?></p>
+        </a>
+    </article>
+    <?php
+}
 
-<div id="upload-form" class="card border-0 shadow-sm">
-    <div class="card-body p-4">
-        <h2 class="h6 fw-semibold mb-3"><?= $editFile ? 'Заменить файл' : 'Загрузить план' ?></h2>
-        <form action="save_ktp.php" method="POST" enctype="multipart/form-data">
-            <?php if ($editFile): ?>
-            <input type="hidden" name="file_id" value="<?= (int)$editFile['id'] ?>">
+/** @param array<string, list<array<string, mixed>>> $grouped */
+function ktp_render_grid(array $grouped, string $base = ''): void
+{
+    $groups = ktp_group_definitions();
+    $hasAny = false;
+    foreach ($grouped as $docs) {
+        if ($docs !== []) {
+            $hasAny = true;
+            break;
+        }
+    }
+
+    if (!$hasAny) {
+        echo '<p class="text-muted mb-0">Материалы календарно-тематического планирования будут опубликованы администрацией.</p>';
+
+        return;
+    }
+
+    foreach ($groups as $groupKey => $meta) {
+        $docs = $grouped[$groupKey] ?? [];
+        if ($docs === []) {
+            continue;
+        }
+        ?>
+        <section class="ktp-group scroll-margin-top" id="ktp-<?= htmlspecialchars($groupKey) ?>">
+            <h2 class="ktp-group-title"><?= htmlspecialchars($meta['title']) ?></h2>
+            <?php if ($meta['subtitle'] !== ''): ?>
+            <p class="ktp-group-subtitle"><?= htmlspecialchars($meta['subtitle']) ?></p>
             <?php endif; ?>
-            <div class="mb-3">
-                <label class="form-label">Название</label>
-                <input type="text" name="file_title" class="form-control" required maxlength="255"
-                       value="<?= htmlspecialchars($editFile['title'] ?? '') ?>">
+            <div class="ktp-grid">
+                <?php foreach ($docs as $doc): ?>
+                    <?php ktp_render_card($doc, $base); ?>
+                <?php endforeach; ?>
             </div>
-            <?php if (!$editFile): ?>
-            <div class="mb-3">
-                <label class="form-label">Группа (категория)</label>
-                <select name="category" class="form-select" required>
-                    <?php foreach (ktp_catalog_items() as $item): ?>
-                    <option value="<?= htmlspecialchars($item['key']) ?>"><?= htmlspecialchars($item['title']) ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            <?php endif; ?>
-            <div class="mb-3">
-                <label class="form-label">PDF<?= $editFile ? ' (оставьте пустым, чтобы не менять)' : '' ?></label>
-                <input type="file" name="file_document" class="form-control" accept=".pdf"<?= $editFile ? '' : ' required' ?>>
-            </div>
-            <button type="submit" class="btn btn-accent"><?= $editFile ? 'Сохранить' : 'Загрузить' ?></button>
-            <?php if ($editFile): ?>
-            <a href="ktp.php#upload-form" class="btn btn-outline-secondary">Отмена</a>
-            <?php endif; ?>
-        </form>
-    </div>
-</div>
-
-<?php admin_page_end(); ?>
+        </section>
+        <?php
+    }
+}

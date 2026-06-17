@@ -1,82 +1,260 @@
 <?php
-require_once '_auth.php';
-require_once '_club_helpers.php';
-require_once __DIR__ . '/../includes/club_enrollment.php';
 
-$pendingApps = 0;
-try {
-    $pendingApps = admin_club_applications_pending_count($pdo);
-} catch (Exception $e) {
-    $pendingApps = 0;
-}
+/** @var PDO $pdo */
 
-$clubs = $pdo->query("
-    SELECT c.*, u.full_name AS teacher_name,
-           (SELECT COUNT(*) FROM club_members cm WHERE cm.club_id = c.id AND cm.status = 'enrolled') AS member_count
-    FROM clubs c
-    LEFT JOIN employees e ON c.teacher_id = e.id
-    LEFT JOIN users u ON e.user_id = u.id
-    ORDER BY c.name
-")->fetchAll(PDO::FETCH_ASSOC);
+/** @var array $clubs */
 
-admin_page_start('Кружки', 'Дополнительные занятия для детей');
+require_once __DIR__ . '/../../includes/club_attendance.php';
+
 ?>
-<div class="mb-4">
-    <a href="club_applications.php" class="btn btn-outline-primary">
-        <i class="bi bi-inbox me-1"></i>Заявки
-        <?php if ($pendingApps > 0): ?>
-            <span class="badge bg-danger ms-1"><?= $pendingApps ?></span>
-        <?php endif; ?>
-    </a>
+
+<div id="employee-clubs" class="lk-block scroll-margin-top mb-5">
+
+    <?php lk_section_title('palette', 'Мои кружки'); ?>
+
+
+
+    <?php foreach ($clubs as $club): ?>
+
+        <?php
+
+        $clubId = (int)$club['id'];
+
+        $members = lk_club_members($pdo, $clubId);
+
+        $clubSummary = lk_club_attendance_summary($pdo, $clubId, 5);
+
+        ?>
+
+        <div class="card border-0 shadow-sm mb-4 overflow-hidden" data-club-card="<?= $clubId ?>">
+
+            <?php
+            $showBroadcastChat = true;
+            require __DIR__ . '/../../includes/partials/lk_club_profile.php';
+            ?>
+
+            <div class="card-body border-top">
+
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+
+                    <h4 class="h6 fw-semibold mb-0">Посещаемость · <?= date('d.m.Y') ?></h4>
+
+                </div>
+
+
+
+                <?php if ($members === []): ?>
+
+                    <p class="text-muted mb-0">Пока никто не записан.</p>
+
+                <?php else: ?>
+
+                    <div class="d-none d-xl-block">
+
+                        <div class="table-responsive">
+
+                            <table class="table table-sm align-middle mb-0 admin-table">
+
+                                <thead class="table-light">
+
+                                    <tr>
+
+                                        <th>Ребёнок</th>
+
+                                        <th>Группа</th>
+
+                                        <th>Родитель</th>
+
+                                        <th>Аллергены</th>
+
+                                        <th>Сегодня</th>
+
+                                        <th></th>
+
+                                    </tr>
+
+                                </thead>
+
+                                <tbody>
+
+                                    <?php foreach ($members as $m): ?>
+
+                                    <tr data-club-child-row="<?= $clubId ?>-<?= (int)$m['id'] ?>">
+
+                                        <td class="fw-semibold"><?= htmlspecialchars($m['full_name']) ?></td>
+
+                                        <td><?= htmlspecialchars($m['group_name'] ?? '—') ?></td>
+
+                                        <td class="small">
+
+                                            <?= htmlspecialchars($m['parent_name'] ?? '—') ?>
+
+                                        </td>
+
+                                        <td class="small"><?= !empty($m['allergy_names']) ? htmlspecialchars($m['allergy_names']) : '—' ?></td>
+
+                                        <td class="club-attendance-status"><?= lk_attendance_badge($m['today_status'] ?? null) ?></td>
+
+                                        <td>
+
+                                            <div class="d-flex gap-1 flex-wrap justify-content-end">
+
+                                                <?php if (!empty($m['parent_id'])): ?>
+
+                                                    <?php lk_render_parent_contact_menu(
+                                                        'club_teacher',
+                                                        (int)$m['parent_id'],
+                                                        $clubId,
+                                                        $m['parent_phone'] ?? null,
+                                                        '..',
+                                                        true
+                                                    ); ?>
+
+                                                <?php endif; ?>
+
+                                                <button type="button" class="btn btn-sm btn-primary-dou mark-club-attendance"
+
+                                                        data-club="<?= $clubId ?>" data-child="<?= (int)$m['id'] ?>" data-status="present">
+
+                                                    <i class="bi bi-check-lg"></i>
+
+                                                </button>
+
+                                                <button type="button" class="btn btn-sm btn-outline-secondary mark-club-attendance"
+
+                                                        data-club="<?= $clubId ?>" data-child="<?= (int)$m['id'] ?>" data-status="absent">
+
+                                                    <i class="bi bi-x-lg"></i>
+
+                                                </button>
+
+                                            </div>
+
+                                        </td>
+
+                                    </tr>
+
+                                    <?php endforeach; ?>
+
+                                </tbody>
+
+                            </table>
+
+                        </div>
+
+                    </div>
+
+
+
+                    <div class="d-xl-none row g-3">
+
+                        <?php foreach ($members as $m): ?>
+
+                        <div class="col-12" data-club-child-row="<?= $clubId ?>-<?= (int)$m['id'] ?>">
+
+                            <article class="lk-child-card">
+
+                                <div class="lk-child-card-body">
+
+                                    <h5 class="fw-semibold mb-1"><?= htmlspecialchars($m['full_name']) ?></h5>
+
+                                    <p class="small text-muted mb-1"><?= htmlspecialchars($m['group_name'] ?? '—') ?></p>
+
+                                    <p class="small mb-2 club-attendance-status"><?= lk_attendance_badge($m['today_status'] ?? null) ?></p>
+
+                                    <div class="d-flex flex-wrap gap-2">
+
+                                        <?php if (!empty($m['parent_id'])): ?>
+
+                                            <?php lk_render_parent_contact_menu(
+                                                'club_teacher',
+                                                (int)$m['parent_id'],
+                                                $clubId,
+                                                $m['parent_phone'] ?? null
+                                            ); ?>
+
+                                        <?php endif; ?>
+
+                                        <button type="button" class="btn btn-sm btn-primary-dou flex-fill mark-club-attendance"
+
+                                                data-club="<?= $clubId ?>" data-child="<?= (int)$m['id'] ?>" data-status="present">
+
+                                            <i class="bi bi-check-lg me-1"></i>Пришёл
+
+                                        </button>
+
+                                        <button type="button" class="btn btn-sm btn-outline-secondary flex-fill mark-club-attendance"
+
+                                                data-club="<?= $clubId ?>" data-child="<?= (int)$m['id'] ?>" data-status="absent">
+
+                                            <i class="bi bi-x-lg me-1"></i>Нет
+
+                                        </button>
+
+                                    </div>
+
+                                </div>
+
+                            </article>
+
+                        </div>
+
+                        <?php endforeach; ?>
+
+                    </div>
+
+
+
+                    <?php if ($clubSummary !== []): ?>
+
+                    <div class="mt-3 pt-3 border-top">
+
+                        <div class="small fw-semibold mb-2">За последние дни</div>
+
+                        <div class="table-responsive">
+
+                            <table class="table table-sm align-middle mb-0">
+
+                                <thead class="table-light">
+
+                                    <tr><th>Дата</th><th>Пришли</th><th>Отсутствуют</th></tr>
+
+                                </thead>
+
+                                <tbody>
+
+                                    <?php foreach ($clubSummary as $row): ?>
+
+                                    <tr>
+
+                                        <td><?= date('d.m.Y', strtotime($row['date'])) ?></td>
+
+                                        <td class="text-success fw-semibold"><?= (int)$row['present_count'] ?></td>
+
+                                        <td class="text-muted"><?= (int)$row['absent_count'] ?></td>
+
+                                    </tr>
+
+                                    <?php endforeach; ?>
+
+                                </tbody>
+
+                            </table>
+
+                        </div>
+
+                    </div>
+
+                    <?php endif; ?>
+
+                <?php endif; ?>
+
+            </div>
+
+        </div>
+
+    <?php endforeach; ?>
+
 </div>
-<?php
-$toolbar = '<a href="add_club.php" class="btn btn-sm btn-accent"><i class="bi bi-plus-lg me-1"></i>Добавить</a>';
-admin_collapse_toolbar('clubs-list', 'Список кружков', false, (string) count($clubs), $toolbar, false);
-?>
-<?php admin_render_table_search('Поиск по названию, расписанию...'); ?>
-<div class="table-responsive">
-    <table class="table table-hover align-middle mb-0 admin-table">
-        <thead class="table-light">
-            <tr>
-                <th>Название</th>
-                <th>Возраст</th>
-                <th>Расписание</th>
-                <th>Руководитель</th>
-                <th>Участники</th>
-                <th>Мест</th>
-                <th class="text-end">Действия</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php if (count($clubs) === 0): ?>
-                <tr><td colspan="7" class="text-center text-muted py-4">Кружков пока нет</td></tr>
-            <?php endif; ?>
-            <?php foreach ($clubs as $club): ?>
-            <tr>
-                <td class="fw-semibold"><?= htmlspecialchars($club['name']) ?></td>
-                <td><?= $club['age_category'] ? htmlspecialchars($club['age_category']) : '—' ?></td>
-                <td><?= $club['schedule'] ? htmlspecialchars($club['schedule']) : '—' ?></td>
-                <td><?= $club['teacher_name'] ? htmlspecialchars($club['teacher_name']) : '—' ?></td>
-                <td>
-                    <a href="club_members.php?id=<?= (int)$club['id'] ?>" class="text-decoration-none">
-                        <?= admin_club_seats_label((int)$club['member_count'], $club['max_participants'] !== null ? (int)$club['max_participants'] : null) ?>
-                    </a>
-                </td>
-                <td><?= $club['max_participants'] ? (int)$club['max_participants'] : '—' ?></td>
-                <td class="text-end text-nowrap">
-                    <a href="club_members.php?id=<?= (int)$club['id'] ?>" class="btn btn-sm btn-outline-secondary" title="Состав">
-                        <i class="bi bi-people"></i>
-                    </a>
-                    <a href="edit_club.php?id=<?= (int)$club['id'] ?>" class="btn btn-sm btn-primary-dou" title="Изменить"><i class="bi bi-pencil"></i></a>
-                    <form action="delete_club.php" method="POST" class="d-inline"
-                          onsubmit="return confirm('Удалить кружок «<?= htmlspecialchars($club['name'], ENT_QUOTES) ?>»?')">
-                        <input type="hidden" name="id" value="<?= (int)$club['id'] ?>">
-                        <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
-                    </form>
-                </td>
-            </tr>
-            <?php endforeach; ?>
-        </tbody>
-    </table>
-</div>
-<?php admin_render_table_search_end(); admin_collapse_toolbar_end(false); admin_page_end(); ?>
+
+

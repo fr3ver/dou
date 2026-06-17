@@ -1,0 +1,8 @@
+includes/config.local.php
+storage/dou_export.sql
+uploads/child_docs/*
+uploads/org_docs/*
+uploads/news/*
+uploads/teachers/*
+!uploads/.htaccess
+!uploads/**/.gitkeep

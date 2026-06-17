@@ -1,0 +1,9 @@
+# Защита служебных каталогов на хостинге
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^(scripts|docs)(/|$) - [F,L]
+    RewriteRule ^test_db\.php$ - [F,L]
+</IfModule>
+
+# Запрет листинга каталогов
+Options -Indexes
